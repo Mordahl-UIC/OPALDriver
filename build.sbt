@@ -1,4 +1,7 @@
-val scala3Version = "3.8.3"
+// Pinned to 3.7.3 to match OPAL 7.0.0's build: that Scala version uses the
+// scala-library 2.13.16 that OPAL's runtime analysis resolution (scala-reflect
+// 2.13.16) requires. Newer Scala 3 ships an incompatible unified scala-library.
+val scala3Version = "3.7.3"
 
 lazy val root = project
   .in(file("."))
@@ -21,7 +24,10 @@ lazy val root = project
     ),
 
     // Test Dependencies
-    libraryDependencies += "org.scalameta" %% "munit"            % "1.2.1" % Test,
+    libraryDependencies += "org.scalameta" %% "munit" % "1.2.1" % Test,
     libraryDependencies += "org.scalameta" %% "munit-scalacheck" % "1.2.0" % Test,
-    libraryDependencies += "org.scalamock" %% "scalamock"        % "7.5.0" % Test
+    libraryDependencies += "org.scalamock" %% "scalamock" % "7.5.0" % Test,
+    libraryDependencies += "de.opal-project" % "bytecode-representation_3" % "7.0.0",
+    libraryDependencies += "de.opal-project" % "three-address-code_3" % "7.0.0",
+    libraryDependencies += "org.rogach" %% "scallop" % "5.2.0"
   )
