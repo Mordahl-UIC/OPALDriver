@@ -62,6 +62,11 @@ private final class Conf(arguments: Seq[String]) extends ScallopConf(arguments) 
       default = Some(false),
       descr = "Do not load the JRE as a library (faster, but less sound)"
     )
+  val libraries: ScallopOption[String] =
+    opt[String](
+      descr = "Additional dependency JARs/dirs (path-separated), loaded for " +
+        "resolution but not analyzed as application code"
+    )
 
   verify()
 }
@@ -117,12 +122,25 @@ def main(args: String*): Unit = {
     )
   }
 
-  val libraryFiles: Array[File] =
+  val depFiles: Array[File] =
+    conf.libraries.toOption.toArray
+      .flatMap(_.split(File.pathSeparatorChar))
+      .filter(_.nonEmpty)
+      .map(new File(_))
+  depFiles.find(!_.exists).foreach { f =>
+    Console.err.println(s"error: library path does not exist: ${f.getPath}")
+    sys.exit(2)
+  }
+
+  val jreFiles: Array[File] =
     if conf.noJdk() then Array.empty[File] else Array(org.opalj.bytecode.JRELibraryFolder)
+  val libraryFiles: Array[File] = jreFiles ++ depFiles
 
   Console.err.println(
     s"Loading project: ${inputFile.getPath}" +
-      (if libraryFiles.isEmpty then "" else s" (+ JRE from ${libraryFiles.head.getPath})")
+      (if jreFiles.isEmpty then "" else s" (+ JRE from ${jreFiles.head.getPath})") +
+      (if depFiles.isEmpty then ""
+       else s" (+ ${depFiles.length} dependency path(s))")
   )
   val project: Project[java.net.URL] =
     Project(Array(inputFile), libraryFiles, GlobalLogContext, config)

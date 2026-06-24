@@ -29,5 +29,28 @@ lazy val root = project
     libraryDependencies += "org.scalamock" %% "scalamock" % "7.5.0" % Test,
     libraryDependencies += "de.opal-project" % "bytecode-representation_3" % "7.0.0",
     libraryDependencies += "de.opal-project" % "three-address-code_3" % "7.0.0",
-    libraryDependencies += "org.rogach" %% "scallop" % "5.2.0"
+    libraryDependencies += "org.rogach"     %% "scallop"              % "5.2.0"
   )
+
+ThisBuild / assembly / assemblyMergeStrategy := {
+  case PathList("slick", xs @ _*) => MergeStrategy.singleOrError
+  case PathList("META-INF", xs @ _*) =>
+    (
+      xs map {
+        _.toLowerCase
+      }
+    ) match {
+      case "services" :: xs =>
+        MergeStrategy.filterDistinctLines
+      case _ =>
+        MergeStrategy.discard
+    }
+  case "module-info.class" =>
+    MergeStrategy.discard
+  case x =>
+    val oldStrategy = (assembly / assemblyMergeStrategy).value
+    oldStrategy(x)
+}
+
+ThisBuild / assembly / test            := {}
+ThisBuild / assembly / assemblyJarName := name.value + ".jar"
