@@ -29,6 +29,7 @@ sbt 'run --input app.jar --output cg.json --algorithm rta'
 | `--l`               | k-CFA only: heap/allocation context depth `l` (default `= k`). |
 | `--entrypoints`     | `application` (default), `application-without-jre`, `library`, `all`, `configured`. |
 | `--no-jdk`          | Do not load the JRE as a library (faster, but less sound). |
+| `--libraries`       | Additional dependency JARs/dirs (path-separated), loaded for resolution but not analyzed as application code. |
 
 ### Algorithms
 
@@ -54,6 +55,22 @@ Selects OPAL's `EntryPointFinder` via
 - `library` — all accessible (public/protected) methods.
 - `all` — every project method (`projectMethodsOnly = true`).
 - `configured` — only entry points listed in configuration.
+
+### Dependency jars
+
+Use `--libraries` to supply the project's dependencies so calls into them
+resolve correctly. Paths are separated by the platform's classpath separator
+(`:` on macOS/Linux, `;` on Windows) and may be JARs or directories of
+`.class` files:
+
+```bash
+sbt 'run --input app.jar --output cg.json --algorithm rta --libraries dep1.jar:dep2.jar:libs/'
+```
+
+Dependencies are loaded as OPAL **library** code: they are resolved for
+type/method lookup but are not treated as entry points or analyzed as your own
+application. This is independent of `--no-jdk`, which only controls whether the
+JRE is loaded.
 
 ## Output format
 
