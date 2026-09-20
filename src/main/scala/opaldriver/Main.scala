@@ -62,10 +62,24 @@ private final class Conf(arguments: Seq[String]) extends ScallopConf(arguments) 
       default = Some(false),
       descr = "Do not load the JRE as a library (faster, but less sound)"
     )
+  val analyzeLibraries: ScallopOption[Boolean] =
+    opt[Boolean](
+      default = Some(false),
+      descr = "Analyze the method bodies of the JRE and --libraries instead of loading " +
+        "them for type resolution only. Sound, but not currently tractable: with OPAL's " +
+        "allocation-site points-to this does not finish in 30 minutes even on a " +
+        "seven-line program. Off by default for that reason -- see the soundness warning " +
+        "the driver prints when it is off."
+    )
+  val quiet: ScallopOption[Boolean] =
+    opt[Boolean](
+      default = Some(false),
+      descr = "Suppress the stubbed-libraries soundness warning"
+    )
   val libraries: ScallopOption[String] =
     opt[String](
-      descr = "Additional dependency JARs/dirs (path-separated), loaded for " +
-        "resolution but not analyzed as application code"
+      descr = "Additional dependency JARs/dirs (path-separated), loaded for resolution " +
+        "and, with --analyze-libraries, analyzed so values flow through them"
     )
 
   verify()
@@ -121,6 +135,7 @@ def main(args: String*): Unit = {
       ConfigValueFactory.fromAnyRef(true)
     )
   }
+  config = withReflectionAllocationsFixed(config)
 
   val depFiles: Array[File] =
     conf.libraries.toOption.toArray
@@ -140,10 +155,55 @@ def main(args: String*): Unit = {
     s"Loading project: ${inputFile.getPath}" +
       (if jreFiles.isEmpty then "" else s" (+ JRE from ${jreFiles.head.getPath})") +
       (if depFiles.isEmpty then ""
-       else s" (+ ${depFiles.length} dependency path(s))")
+       else s" (+ ${depFiles.length} dependency path(s))") +
+      (if conf.analyzeLibraries() then " [libraries analyzed]"
+       else " [libraries stubbed: signatures only]")
   )
+
+  if !conf.analyzeLibraries() && !conf.quiet() && libraryFiles.nonEmpty then {
+    Console.err.println(
+      """warning: library method bodies are not analyzed (the default).
+        |  Libraries are loaded for type and hierarchy resolution only, so no value flows
+        |  through them: java.util.HashMap.put and .get are reachable with zero callees,
+        |  anything read back out of a collection has an empty points-to set, and the call
+        |  on such a receiver is ABSENT from the call graph -- even when its declared
+        |  receiver type already determines the target uniquely.
+        |  Recall figures computed from this call graph understate the analysis
+        |  accordingly. Pass --analyze-libraries for the sound behaviour (see its help
+        |  text for why it is not the default), or --quiet to silence this.""".stripMargin
+    )
+  }
+
+  /* Library class files have to be read with the *full* reader and declared not
+   * to be interfaces-only, or OPAL keeps their signatures and throws their
+   * method bodies away.
+   *
+   * `Project(projectFiles, libraryFiles, ...)` does exactly that: it reads the
+   * library entries with `JavaLibraryClassFileReader`, which is why the warning
+   * above is needed. Analyzing them instead is correct but, measured on OPAL
+   * 7.0.0, not tractable: a seven-line program with the JRE analyzed does not
+   * finish in 30 minutes, and neither does restricting the JRE to java.base.
+   * The flag therefore exists and is documented, but stays off by default --
+   * an unsound graph that exists beats a sound one that never arrives, provided
+   * the unsoundness is stated rather than silent.
+   */
   val project: Project[java.net.URL] =
-    Project(Array(inputFile), libraryFiles, GlobalLogContext, config)
+    if !conf.analyzeLibraries() then
+      Project(Array(inputFile), libraryFiles, GlobalLogContext, config)
+    else {
+      val reader            = Project.JavaClassFileReader(using GlobalLogContext, config)
+      val projectClassFiles = reader.ClassFiles(inputFile)
+      val libraryClassFiles = libraryFiles.iterator.flatMap(f => reader.ClassFiles(f)).toList
+      Project(
+        projectClassFiles,
+        libraryClassFiles,
+        false, // libraryClassFilesAreInterfacesOnly
+        Iterable.empty,
+        Project.defaultHandlerForInconsistentProjects,
+        config,
+        GlobalLogContext
+      )
+    }
 
   Console.err.println(s"Computing call graph (${conf.algorithm()}) ...")
   val callGraph: CallGraph = project.get(cgKey)
@@ -223,6 +283,50 @@ def main(args: String*): Unit = {
   Console.err.println(
     s"Done: $reachableCount reachable method contexts, $edgeCount call edges -> ${outFile.getPath}"
   )
+}
+
+private val PointsToModulesKey = "org.opalj.tac.cg.PointsTo.modules"
+
+/** The entry as OPAL 7.0.0's `reference.conf` spells it, and the class that
+  * actually exists.
+  */
+private val BrokenReflectionModule = "ReflectionAllocationsAnalysisScheduler"
+private val ReflectionModule =
+  "org.opalj.tac.fpcf.analyses.pointsto.ReflectionAllocationsAnalysisScheduler"
+
+/** Repairs an unresolvable entry in OPAL 7.0.0's points-to module list.
+  *
+  * `org.opalj.tac.cg.PointsTo.modules` mixes two spellings: short names, which
+  * OPAL expands to `…pointsto.<PointsToType><name>AnalysisScheduler`, and
+  * fully-qualified ones, used verbatim. `ReflectionAllocationsAnalysisScheduler`
+  * is written as a short name but already carries the suffix OPAL appends, so it
+  * expands to
+  * `…pointsto.AllocationSiteBasedReflectionAllocationsAnalysisSchedulerAnalysisScheduler`,
+  * which does not exist — the real class is
+  * `…pointsto.ReflectionAllocationsAnalysisScheduler`, with no points-to-type
+  * prefix at all.
+  *
+  * OPAL logs the failed lookup and carries on, so without this every call graph
+  * is built without reflection-allocation support and nothing says so beyond one
+  * error line. Rewriting the entry to the fully-qualified name, the form the two
+  * neighbouring entries already use, makes it resolve.
+  */
+private def withReflectionAllocationsFixed(config: Config): Config = {
+  import scala.jdk.CollectionConverters.*
+  if !config.hasPath(PointsToModulesKey) then config
+  else {
+    val modules = config.getStringList(PointsToModulesKey).asScala.toList
+    val fixed   =
+      modules.map(m => if m == BrokenReflectionModule then ReflectionModule else m)
+    if fixed == modules then config
+    else {
+      Console.err.println(
+        s"note: rewrote '$BrokenReflectionModule' to '$ReflectionModule' in " +
+          s"$PointsToModulesKey (OPAL 7.0.0 ships an unresolvable short name)"
+      )
+      config.withValue(PointsToModulesKey, ConfigValueFactory.fromIterable(fixed.asJava))
+    }
+  }
 }
 
 /** Renders a [[DeclaredMethod]] as `declaringClass.name(descriptor)`. */
